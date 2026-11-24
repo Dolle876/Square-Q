@@ -1,0 +1,66 @@
+name: Generar mezclas TNoodle
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  scrambles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Bajar TNoodle CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p tnoodle && cd tnoodle
+          for r in SpeedcuberOSS/tnoodle-cli jhale1805/tnoodle-cli; do
+            gh release download --repo "$r" --pattern 'tnoodle-cli-*.jar' && break || true
+          done
+          ls -la
+
+      - name: Generar mezclas
+        run: |
+          JAR=$(ls tnoodle/tnoodle-cli-*.jar | grep -v sources | head -n1)
+          echo "Usando $JAR"
+          T() { java -jar "$JAR" "$@"; }
+          T puzzles || true
+          mkdir -p scrambles
+          gen() {
+            pool=$1; n=$2; shift 2
+            for p in "$@"; do
+              if T scramble --puzzle "$p" --count "$n" --output "scrambles/$pool.tmp" && [ -s "scrambles/$pool.tmp" ]; then
+                mv "scrambles/$pool.tmp" "scrambles/$pool.json"; echo "OK    $pool (puzzle=$p, $n mezclas)"; return
+              fi
+            done
+            echo "FALLO $pool (probé: $*)"; rm -f "scrambles/$pool.tmp"
+          }
+          gen 333   1000 three 333
+          gen 222    500 two 222
+          gen 444    300 four 444
+          gen 555    200 five 555
+          gen 666    200 six 666
+          gen 777    200 seven 777
+          gen pyra   500 pyra pyraminx
+          gen skewb  500 skewb
+          gen sq1    500 sq1 squareone
+          gen clock  300 clock
+          gen minx   300 minx megaminx
+          ls -la scrambles
+
+      - name: Guardar en el repositorio
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scrambles
+          git diff --cached --quiet || (git commit -m "Actualizar mezclas TNoodle" && git push)
