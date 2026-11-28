@@ -3,14 +3,19 @@ name: Generar mezclas TNoodle
 on:
   workflow_dispatch:
   schedule:
-    - cron: "10 10 * * *"
+    - cron: "10 10 * * *"   # todos los días a las 10:10 UTC
 
 permissions:
   contents: write
 
+concurrency:
+  group: mezclas-tnoodle
+  cancel-in-progress: false
+
 jobs:
   scrambles:
     runs-on: ubuntu-latest
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
@@ -28,39 +33,113 @@ jobs:
             gh release download --repo "$r" --pattern 'tnoodle-cli-*.jar' && break || true
           done
           ls -la
+          ls tnoodle-cli-*.jar >/dev/null 2>&1 || { echo "::error::No se pudo bajar TNoodle CLI"; exit 1; }
 
       - name: Generar mezclas
         run: |
+          set +e   # un puzzle que falle no debe frenar a los demás
           JAR=$(ls tnoodle/tnoodle-cli-*.jar | grep -v sources | head -n1)
           echo "Usando $JAR"
-          T() { java -jar "$JAR" "$@"; }
-          T puzzles || true
           mkdir -p scrambles
+          : > "$RUNNER_TEMP/fallos.txt"
+
+          # nombres de puzzles que acepta esta versión del CLI (queda en el log para diagnosticar)
+          PUZ=$(java -jar "$JAR" puzzles 2>&1)
+          echo "---- puzzles disponibles ----"; echo "$PUZ"; echo "-----------------------------"
+          # si el CLI nombra al megaminx de otra forma, se detecta solo
+          EXTRA_MINX=$(echo "$PUZ" | grep -ioE '[a-z0-9_-]*(mega|minx)[a-z0-9_-]*' | tr 'A-Z' 'a-z' | sort -u | tr '\n' ' ')
+
+          # Valida y normaliza: deja SIEMPRE un array JSON de strings (las mezclas de Megaminx van con saltos de línea adentro)
+          cat > "$RUNNER_TEMP/validar.py" <<'PY'
+          import json, sys
+          f, n = sys.argv[1], int(sys.argv[2])
+          raw = open(f, encoding="utf-8", errors="replace").read()
+          try:
+              d = json.loads(raw)
+          except Exception:
+              d = None
+          def pick(x):
+              if isinstance(x, str):
+                  return x
+              if isinstance(x, dict):
+                  for k in ("scrambleString", "scramble", "s", "text"):
+                      if isinstance(x.get(k), str):
+                          return x[k]
+              return None
+          if isinstance(d, dict):
+              for k in ("scrambles", "data", "items"):
+                  if isinstance(d.get(k), list):
+                      d = d[k]
+                      break
+          if isinstance(d, list):
+              items = [pick(x) for x in d]
+          else:
+              raw = raw.replace("\r", "")
+              blocks = [b.strip() for b in raw.split("\n\n") if b.strip()]
+              items = blocks if len(blocks) > 1 else [l.strip() for l in raw.split("\n") if l.strip()]
+          items = [i.strip() for i in items if i and i.strip()]
+          if len(items) < max(1, n // 2):
+              print("   pocas mezclas válidas:", len(items), "de", n)
+              sys.exit(1)
+          json.dump(items, open(f, "w", encoding="utf-8"), ensure_ascii=False)
+          print("   ", len(items), "mezclas válidas")
+          PY
+
           gen() {
-            pool=$1; n=$2; shift 2
+            local pool=$1 n=$2 p; shift 2
+            local tmp="scrambles/$pool.tmp" err="scrambles/$pool.err"
             for p in "$@"; do
-              if T scramble --puzzle "$p" --count "$n" --output "scrambles/$pool.tmp" && [ -s "scrambles/$pool.tmp" ]; then
-                mv "scrambles/$pool.tmp" "scrambles/$pool.json"; echo "OK    $pool (puzzle=$p, $n mezclas)"; return
+              rm -f "$tmp"
+              echo "== $pool: probando puzzle=$p ($n mezclas)"
+              if timeout 25m java -jar "$JAR" scramble --puzzle "$p" --count "$n" --output "$tmp" >"$err" 2>&1 && [ -s "$tmp" ]; then
+                if python3 "$RUNNER_TEMP/validar.py" "$tmp" "$n"; then
+                  mv "$tmp" "scrambles/$pool.json"; rm -f "$err"
+                  echo "OK    $pool (puzzle=$p, $n mezclas)"; echo "- OK $pool (\`$p\`)" >> "$GITHUB_STEP_SUMMARY"
+                  return 0
+                fi
+              else
+                echo "   no funcionó con '$p': $(tail -n 3 "$err" | tr '\n' ' ' | cut -c1-300)"
               fi
             done
-            echo "FALLO $pool (probé: $*)"; rm -f "scrambles/$pool.tmp"
+            echo "FALLO $pool (probé: $*)"; echo "- FALLO $pool (probé: $*)" >> "$GITHUB_STEP_SUMMARY"
+            echo "$pool" >> "$RUNNER_TEMP/fallos.txt"
+            rm -f "$tmp" "$err"; return 1
           }
+
           gen 333   1000 three 333
           gen 222   1000 two 222
           gen 444   1000 four 444
           gen 555   1000 five 555
           gen 666   1000 six 666
           gen 777   1000 seven 777
-          gen pyra   1000 pyra pyraminx
-          gen skewb   1000 skewb
-          gen sq1   1000 sq1 squareone
-          gen clock   1000 clock
-          gen minx   1000 minx megaminx
+          gen pyra  1000 pyra pyram pyraminx
+          gen skewb 1000 skewb
+          gen sq1   1000 sq1 squareone square1
+          gen clock 1000 clock
+          gen minx  1000 mega minx megaminx $EXTRA_MINX
+          rm -f scrambles/*.tmp scrambles/*.err
           ls -la scrambles
+          exit 0
 
       - name: Guardar en el repositorio
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add scrambles
-          git diff --cached --quiet || (git commit -m "Actualizar mezclas TNoodle" && git push)
+          git add scrambles/*.json
+          if git diff --cached --quiet; then echo "Sin cambios"; exit 0; fi
+          git commit -m "Actualizar mezclas TNoodle"
+          # si subiste algo a la rama mientras corría el trabajo, se reintegra antes de subir
+          for i in 1 2 3 4 5; do
+            if git pull --rebase --autostash origin "$GITHUB_REF_NAME" && git push origin "HEAD:$GITHUB_REF_NAME"; then exit 0; fi
+            sleep $((i * 5))
+          done
+          echo "::error::No se pudo subir el commit de mezclas"; exit 1
+
+      - name: Avisar si algún puzzle falló
+        if: always()
+        run: |
+          if [ -s "$RUNNER_TEMP/fallos.txt" ]; then
+            echo "::error::No se generaron mezclas de: $(tr '\n' ' ' < "$RUNNER_TEMP/fallos.txt")(se conservan las anteriores)"
+            exit 1
+          fi
