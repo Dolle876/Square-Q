@@ -46,16 +46,16 @@ jobs:
             echo "FALLO $pool (probé: $*)"; rm -f "scrambles/$pool.tmp"
           }
           gen 333   1000 three 333
-          gen 222    500 two 222
-          gen 444    300 four 444
-          gen 555    200 five 555
-          gen 666    200 six 666
-          gen 777    200 seven 777
-          gen pyra   500 pyra pyraminx
-          gen skewb  500 skewb
-          gen sq1    500 sq1 squareone
-          gen clock  300 clock
-          gen minx   300 minx megaminx
+          gen 222   1000 two 222
+          gen 444   1000 four 444
+          gen 555   1000 five 555
+          gen 666   1000 six 666
+          gen 777   1000 seven 777
+          gen pyra   1000 pyra pyraminx
+          gen skewb   1000 skewb
+          gen sq1   1000 sq1 squareone
+          gen clock   1000 clock
+          gen minx   1000 minx megaminx
           ls -la scrambles
 
       - name: Guardar en el repositorio
