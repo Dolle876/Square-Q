@@ -3,7 +3,7 @@ name: Generar mezclas TNoodle
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: "40 9 * * *"
 
 permissions:
   contents: write
